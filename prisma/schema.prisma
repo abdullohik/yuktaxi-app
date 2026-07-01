@@ -1,0 +1,280 @@
+// YukTaxi — cargo/logistics platform schema
+// SQLite. All coordinates stored as Float (lat/lng).
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  phone     String   @unique
+  name      String?
+  role      String   @default("CUSTOMER") // CUSTOMER | DRIVER | FLEET | ADMIN
+  language  String   @default("uz")       // uz | ru | en
+  avatar    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  orders       Order[]       @relation("CustomerOrders")
+  driverOrders Order[]       @relation("DriverOrders")
+  messages     ChatMessage[]
+  addresses    SavedAddress[]
+  reviewsGiven Review[]      @relation("Reviewer")
+  notifications Notification[]
+  driver       Driver?
+}
+
+model Driver {
+  id           String   @id @default(cuid())
+  userId       String   @unique
+  user         User     @relation(fields: [userId], references: [id])
+  isOnline     Boolean  @default(false)
+  rating       Float    @default(5.0)
+  totalTrips   Int      @default(0)
+  trustScore   Int      @default(80)
+  vehicleType  String   @default("truck_small") // truck_small | truck_medium | truck_large | pickup | van
+  vehiclePlate String?
+  city         String   @default("Toshkent")
+  balance      Int      @default(0) // so'm
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  earnings EarningsEvent[]
+}
+
+model Order {
+  id           String   @id @default(cuid())
+  customer     User     @relation("CustomerOrders", fields: [customerPhone], references: [phone])
+  customerPhone String
+  driver       User?    @relation("DriverOrders", fields: [driverPhone], references: [phone])
+  driverPhone  String?
+
+  // Coordinates (Float for SQLite)
+  pickupLat     Float
+  pickupLng     Float
+  pickupAddress String
+  pickupApt     String? // apartment / office number (free text)
+  pickupEntrance String? // entrance / pod'ezd
+  pickupFloor   String? // floor
+  dropoffLat    Float
+  dropoffLng    Float
+  dropoffAddress String
+  dropoffApt    String?
+  dropoffEntrance String?
+  dropoffFloor  String?
+
+  cargoType    String  // truck_small | truck_medium | truck_large | pickup | van
+  weightKg     Int     @default(0)
+  note         String?
+  priceSom     Int
+  distanceKm   Float
+  durationMin  Int     @default(0)
+
+  // Detailed cargo manifest (entered by customer during booking)
+  cargoTitle       String? // "Divan", "Kholodilnik", etc.
+  cargoDescription String? // free-form description
+  cargoCategory    String? // furniture | appliances | construction | boxes | other
+  cargoLengthCm    Int?
+  cargoWidthCm     Int?
+  cargoHeightCm    Int?
+  cargoValueSom    Int?    // declared value for insurance
+  isFragile        Boolean @default(false)
+  needsLoadingHelp Boolean @default(false) // customer wants help loading
+
+  status       String  @default("SEARCHING")
+  // SEARCHING | ACCEPTED | ARRIVING | ARRIVED | LOADED | IN_TRANSIT | DELIVERED | COMPLETED | CANCELLED
+  cancelReason String?
+
+  createdAt    DateTime @default(now())
+  acceptedAt   DateTime?
+  pickedUpAt   DateTime?
+  deliveredAt  DateTime?
+  updatedAt    DateTime @updatedAt
+
+  history      OrderStatusHistory[]
+  messages     ChatMessage[]
+  reviews      Review[]
+  photos       OrderPhoto[]
+  aiComparisons AIComparison[]
+
+  @@index([customerPhone, status, createdAt])
+  @@index([driverPhone, status])
+}
+
+model OrderStatusHistory {
+  id        String   @id @default(cuid())
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId   String
+  status    String
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([orderId, createdAt])
+}
+
+model ChatMessage {
+  id          String   @id @default(cuid())
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId     String
+  sender      User     @relation(fields: [senderPhone], references: [phone])
+  senderPhone String
+  senderRole  String   // CUSTOMER | DRIVER
+  text        String
+  createdAt   DateTime @default(now())
+
+  @@index([orderId, createdAt])
+}
+
+model SavedAddress {
+  id        String   @id @default(cuid())
+  user      User     @relation(fields: [userPhone], references: [phone], onDelete: Cascade)
+  userPhone String
+  label     String   // Uy | Ish | ...
+  lat       Float
+  lng       Float
+  address   String
+  createdAt DateTime @default(now())
+
+  @@index([userPhone])
+}
+
+model Review {
+  id          String   @id @default(cuid())
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId     String
+  reviewer    User     @relation("Reviewer", fields: [reviewerPhone], references: [phone])
+  reviewerPhone String
+  rating      Int      // 1-5
+  onTime      Int      @default(5)
+  cargoSafe   Int      @default(5)
+  polite      Int      @default(5)
+  comment     String?
+  createdAt   DateTime @default(now())
+
+  @@index([orderId])
+}
+
+model EarningsEvent {
+  id         String   @id @default(cuid())
+  driver     Driver   @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  driverId   String
+  orderId    String
+  amount     Int      // so'm credited to driver (80% of order price)
+  createdAt  DateTime @default(now())
+
+  @@index([driverId, createdAt])
+}
+
+// Photos attached to an order — for proof of condition (before/after pickup/delivery).
+// Stored as base64 data URLs (simple, no file system needed for the demo).
+model OrderPhoto {
+  id             String   @id @default(cuid())
+  order          Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId        String
+  uploaderPhone  String
+  uploaderRole   String   // CUSTOMER | DRIVER
+  // Lifecycle stage when the photo was taken:
+  // BEFORE_PICKUP — customer shows what they're sending
+  // AT_PICKUP     — driver confirms condition at pickup (4-side capture)
+  // IN_TRANSIT    — driver documents loaded cargo
+  // AT_DELIVERY   — driver/customer confirms condition at delivery
+  stage          String
+  // For AT_PICKUP driver photos: which side of the cargo was captured
+  // FRONT | BACK | LEFT | RIGHT | null (null for non-4-side photos)
+  side           String?
+  // If true, photo is only visible to the driver (e.g. AI-annotated driver photos
+  // that the customer should not see to avoid tipping off fraud detection).
+  driverOnly     Boolean  @default(false)
+  dataUrl        String   // base64 data URL (data:image/jpeg;base64,...)
+  note           String?
+  createdAt      DateTime @default(now())
+
+  @@index([orderId, stage])
+  @@index([orderId, side])
+}
+
+// AI comparison between customer-submitted photos and driver-submitted 4-side photos.
+// Created when the driver completes the 4-side capture flow. Visible to driver only.
+model AIComparison {
+  id              String   @id @default(cuid())
+  order           Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId         String
+  // Snapshot of which photos were compared (JSON array of OrderPhoto IDs)
+  customerPhotoIds String  // JSON: ["id1","id2"]
+  driverPhotoIds  String   // JSON: ["id1","id2","id3","id4"]
+  // 0-100: how confident the AI is that customer and driver photographed the same item
+  matchPercentage Int
+  // 0-100: AI's assessment of cargo condition (higher = better)
+  conditionPercentage Int
+  // Short summary of what the AI observed
+  observedItem    String?  // "3-seat sofa, dark fabric, minor wear on armrest"
+  damageNotes     String?  // "Small tear on left side, scratches on bottom"
+  recommendation  String   // "OK_TO_PROCEED" | "INSPECT_WITH_CUSTOMER" | "REFUSE_PICKUP"
+  // Which AI provider produced this analysis
+  provider        String   // gemini | z-ai | heuristic
+  createdAt       DateTime @default(now())
+
+  @@index([orderId])
+}
+
+// Payment for an order. Mock processor in dev (no real card network).
+// Note: orderId is a plain String (no FK) so payment can be created BEFORE the order
+// (customer pays during booking, then order is created and linked via orderId).
+model Payment {
+  id              String   @id @default(cuid())
+  orderId         String   @unique
+  // method: CARD (online) | CASH (to driver on delivery)
+  method          String   @default("CARD")
+  // PENDING — created, not yet charged
+  // AUTHORIZED — card authorized (hold), not captured
+  // CAPTURED — funds captured (order paid)
+  // REFUNDED — fully refunded (cancellation/return)
+  // FAILED — charge failed
+  status          String   @default("PENDING")
+  amount          Int      // so'm
+  // Card details (mock — only last 4 + brand are persisted; never store full PAN/CVV)
+  cardLast4       String?
+  cardBrand       String?  // visa | mastercard | uzcard | humo | unknown
+  cardHolderName  String?
+  // Mock processor transaction ID
+  transactionId   String?
+  failureReason   String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+// Saved cards for users (only last 4 digits stored; never full PAN/CVV)
+model SavedCard {
+  id              String   @id @default(cuid())
+  userPhone       String
+  label           String?  // "Mening kartam", "Ish kartasi", etc.
+  cardLast4       String   // "8600"
+  cardBrand       String   @default("unknown") // uzcard | humo | visa | mastercard | unknown
+  cardHolderName  String?
+  isDefault       Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([userPhone])
+}
+
+// In-app notifications for users
+model Notification {
+  id        String   @id @default(cuid())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  type      String   // ORDER_STATUS | NEW_ORDER | PAYMENT | PROMO | SYSTEM
+  title     String
+  body      String
+  data      String?  // JSON: { orderId, ... }
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId, read, createdAt])
+}
