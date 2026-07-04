@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // "standalone" removed — Vercel handles output format automatically
+  output: "standalone", // Required for Railway deployment
   typescript: {
     ignoreBuildErrors: true,
   },
