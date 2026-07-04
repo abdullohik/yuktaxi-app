@@ -1,5 +1,5 @@
 // YukTaxi — cargo/logistics platform schema
-// SQLite. All coordinates stored as Float (lat/lng).
+// Supports SQLite for dev, PostgreSQL for production (Railway)
 
 generator client {
   provider        = "prisma-client-js"
@@ -7,7 +7,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -55,7 +55,7 @@ model Order {
   driver       User?    @relation("DriverOrders", fields: [driverPhone], references: [phone])
   driverPhone  String?
 
-  // Coordinates (Float for SQLite)
+  // Coordinates (stored as numeric for PostgreSQL)
   pickupLat     Float
   pickupLng     Float
   pickupAddress String
